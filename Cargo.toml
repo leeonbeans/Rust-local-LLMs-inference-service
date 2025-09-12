@@ -1,0 +1,29 @@
+[package]
+name = "rustllm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+candle-datasets = {  version = "0.9.1" , optional = true }
+candle-nn = {  version = "0.9.1",features = ["cuda"]  }
+candle-transformers = { version = "0.9.1"  }
+candle-flash-attn = {  version = "0.9.1" , optional = true }
+candle-onnx = {  version = "0.9.1" , optional = true }
+candle-examples = "0.9.1"
+
+tokenizers = { version = "0.21.0", default-features = false, features = ["onig"] }
+candle-core = { version = "0.9.1",features = ["cuda"] }
+rand = "0.9.0"
+anyhow = "1"
+
+
+[dev-dependencies]
+anyhow = {  version = "1", features = ["backtrace"] }
+rand = { version = "0.9.0" }
+
+
+[build-dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+
+[features]
+default = []
