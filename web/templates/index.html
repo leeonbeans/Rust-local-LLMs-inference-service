@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        /* 样式保持不变，只更新JavaScript部分 */
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>千问模型交互界面</h1>
+    <div class="model-info">代理模式: 8081 → 8080</div>
+</div>
+
+<div class="connection-status" id="connection-status">检测连接中...</div>
+
+<div class="chat-container" id="chat-container">
+    <div class="message ai-message">
+        您好！我是基于千问模型的AI助手，通过代理服务器与您交互。
+        请问有什么可以帮您的吗？
+    </div>
+    <div class="typing-indicator" id="typing-indicator">
+        <div class="typing-dots">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+    </div>
+</div>
+
+<div class="input-area">
+    <textarea id="user-input" placeholder="请输入您的问题..." rows="1" autocomplete="off"></textarea>
+    <button id="send-button">发送</button>
+    <button id="debug-button" style="background-color: #6c757d;">调试</button>
+</div>
+
+<script>
+    const chatContainer = document.getElementById('chat-container');
+    const userInput = document.getElementById('user-input');
+    const sendButton = document.getElementById('send-button');
+    const debugButton = document.getElementById('debug-button');
+    const typingIndicator = document.getElementById('typing-indicator');
+    const connectionStatus = document.getElementById('connection-status');
+
+    // 检查服务器健康状态
+    async function checkServerHealth() {
+        try {
+            const response = await fetch('/api/health');
+            if (response.ok) {
+                connectionStatus.textContent = "✅ 代理服务器运行正常";
+                connectionStatus.classList.add("connected");
+                return true;
+            }
+        } catch (error) {
+            console.error('健康检查失败:', error);
+        }
+
+        connectionStatus.textContent = "❌ 代理服务器连接异常";
+        connectionStatus.classList.remove("connected");
+        return false;
+    }
+
+    // 检查连接状态
+    async function checkConnection() {
+        connectionStatus.textContent = "检查连接中...";
+        connectionStatus.style.display = 'block';
+
+        // 首先检查Rust服务器是否正常
+        const serverHealthy = await checkServerHealth();
+        if (!serverHealthy) {
+            addMessage("系统错误: 无法连接到Rust代理服务器(8081端口)", false);
+            addMessage("请确保: 1. Rust服务器已启动 2. 端口8081未被占用", false);
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/check-connection');
+            const data = await response.json();
+
+            if (response.ok) {
+                let llamaConnected = data.results.some(r => r.includes('✅'));
+
+                if (llamaConnected) {
+                    connectionStatus.textContent = "✅ 已连接到AI服务";
+                    connectionStatus.classList.add("connected");
+                    addMessage("系统: 代理服务器运行正常，已检测到AI模型服务", false);
+                } else {
+                    connectionStatus.textContent = "⚠️ AI服务连接异常";
+                    connectionStatus.classList.remove("connected");
+                    addMessage("系统: 代理服务器正常，但无法连接到llama.cpp(8080端口)", false);
+                }
+
+                // 显示详细连接信息
+                addMessage("连接测试结果:", false);
+                data.results.forEach(result => {
+                    addMessage(`  - ${result}`, false);
+                });
+            }
+        } catch (error) {
+            connectionStatus.textContent = "❌ 连接检查失败";
+            connectionStatus.classList.remove("connected");
+            addMessage(`系统错误: 连接检查失败 - ${error.message}`, false);
+        }
+    }
+
+    // 调试功能：测试连接
+    async function testApiConnection() {
+        showTypingIndicator();
+        addMessage("正在测试连接...", false);
+
+        try {
+            // 测试Rust服务器
+            const healthResponse = await fetch('/api/health');
+            if (!healthResponse.ok) {
+                addMessage("❌ Rust服务器(8081)无响应", false);
+                hideTypingIndicator();
+                return;
+            }
+
+            addMessage("✅ Rust服务器(8081)运行正常", false);
+
+            // 测试llama.cpp连接
+            const connectionResponse = await fetch('/api/check-connection');
+            const data = await connectionResponse.json();
+
+            data.results.forEach(result => {
+                addMessage(`  - ${result}`, false);
+            });
+
+            if (data.results.some(r => r.includes('✅'))) {
+                addMessage("✅ llama.cpp连接正常", false);
+            } else {
+                addMessage("❌ 无法连接到llama.cpp(8080)", false);
+                addMessage("请检查: 1. llama.cpp是否启动 2. 端口8080是否占用", false);
+            }
+        } catch (error) {
+            addMessage(`连接测试失败: ${error.message}`, false);
+        } finally {
+            hideTypingIndicator();
+        }
+    }
+
+    // 页面加载时检查连接状态
+    window.addEventListener('load', () => {
+        checkConnection();
+        userInput.focus();
+    });
+
+    // 自动调整文本区域高度
+    userInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight) + 'px';
+    });
+
+    function addMessage(text, isUser) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${isUser ? 'user-message' : 'ai-message'}`;
+        messageDiv.textContent = text;
+        chatContainer.insertBefore(messageDiv, typingIndicator);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        return messageDiv;
+    }
+
+    function showTypingIndicator() {
+        typingIndicator.style.display = 'block';
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        sendButton.disabled = true;
+        debugButton.disabled = true;
+    }
+
+    function hideTypingIndicator() {
+        typingIndicator.style.display = 'none';
+        sendButton.disabled = false;
+        debugButton.disabled = false;
+    }
+
+    async function sendMessage() {
+        const message = userInput.value.trim();
+        if (!message) return;
+
+        // 添加用户消息到聊天区域
+        addMessage(message, true);
+        userInput.value = '';
+        userInput.style.height = 'auto';
+
+        // 显示"正在输入"指示器
+        showTypingIndicator();
+
+        try {
+            // 发送消息到后端
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ message: message })
+            });
+
+            if (!response.ok) {
+                throw new Error(`服务器返回错误: ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            // 隐藏输入指示器并添加AI响应
+            hideTypingIndicator();
+            addMessage(data.response, false);
+
+            // 更新连接状态
+            if (data.success) {
+                connectionStatus.textContent = "✅ 已连接到AI服务";
+                connectionStatus.classList.add("connected");
+            } else {
+                connectionStatus.textContent = "⚠️ 使用演示模式";
+                connectionStatus.classList.remove("connected");
+            }
+
+        } catch (error) {
+            hideTypingIndicator();
+            addMessage(`网络错误: ${error.message}`, false);
+            console.error('错误:', error);
+
+            connectionStatus.textContent = "❌ 网络连接异常";
+            connectionStatus.classList.remove("connected");
+        }
+    }
+
+    sendButton.addEventListener('click', sendMessage);
+    debugButton.addEventListener('click', testApiConnection);
+
+    userInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+</script>
+</body>
+</html>

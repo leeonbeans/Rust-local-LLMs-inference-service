@@ -1,0 +1,18 @@
+[package]
+name = "ai-model-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.0"
+actix-files = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tera = "1.17"
+futures-util = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+env_logger = "0.11.8"
+chrono = "0.4.42"
+[build-dependencies]
+chrono = "0.4.42"
