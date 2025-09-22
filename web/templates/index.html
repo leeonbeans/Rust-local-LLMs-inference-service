@@ -64,7 +64,7 @@
             font-weight: bold;
             font-size: 0.9rem;
         }
-
+        
         .settings-group select, .settings-group input[type="range"] {
             width: 100%;
             padding: 8px;
@@ -78,7 +78,7 @@
         .settings-group input[type="range"] {
             padding: 0;
         }
-
+        
         .value-display {
             font-weight: normal;
             color: #a0a0a0;
@@ -103,7 +103,7 @@
             margin-top: 20px;
             padding-top: 20px;
         }
-
+        
         .stats-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -126,7 +126,7 @@
         .disk-bar { background-color: var(--disk-color); }
         .net-bar { background-color: var(--net-color); }
         .stat-percent { margin-top: 5px; font-size: 0.9rem; font-weight: bold; }
-
+        
         #deviceStatusAlert {
             font-size: 0.85rem;
             padding: 8px 12px;
@@ -164,72 +164,72 @@
     </style>
 </head>
 <body>
-<div class="sidebar">
-    <h1>LLM Control Panel</h1>
+    <div class="sidebar">
+        <h1>LLM Control Panel</h1>
+        
+        <div class="settings-group">
+            <label for="model-select">Model</label>
+            <select id="model-select">
+                <option value="phi-3">Phi-3</option>
+                <option value="llama2-7b-q">Llama2-7B (Quantized)</option>
+                <option value="custom-model">Custom Model</option>
+            </select>
+        </div>
 
-    <div class="settings-group">
-        <label for="model-select">Model</label>
-        <select id="model-select">
-            <option value="phi-3">Phi-3</option>
-            <option value="llama2-7b-q">Llama2-7B (Quantized)</option>
-            <option value="custom-model">Custom Model</option>
-        </select>
-    </div>
+        <div class="settings-group">
+            <label for="temperature-slider">Temperature: <span id="temperature-value" class="value-display">0.7</span></label>
+            <input type="range" id="temperature-slider" min="0" max="2" step="0.1" value="0.7">
+        </div>
 
-    <div class="settings-group">
-        <label for="temperature-slider">Temperature: <span id="temperature-value" class="value-display">0.7</span></label>
-        <input type="range" id="temperature-slider" min="0" max="2" step="0.1" value="0.7">
-    </div>
+        <div class="settings-group">
+            <label for="top-p-slider">Top P: <span id="top-p-value" class="value-display">0.9</span></label>
+            <input type="range" id="top-p-slider" min="0" max="1" step="0.05" value="0.9">
+        </div>
 
-    <div class="settings-group">
-        <label for="top-p-slider">Top P: <span id="top-p-value" class="value-display">0.9</span></label>
-        <input type="range" id="top-p-slider" min="0" max="1" step="0.05" value="0.9">
-    </div>
-
-    <!-- 新增的系统资源监控面板 -->
-    <div class="settings-group system-monitoring">
-        <label>System Resource Monitoring</label>
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-card-title">CPU</div>
-                <div class="progress"><div id="cpuUsage" class="progress-bar cpu-bar" style="width: 0%;"></div></div>
-                <div id="cpuPercent" class="stat-percent">0%</div>
+        <!-- 新增的系统资源监控面板 -->
+        <div class="settings-group system-monitoring">
+            <label>System Resource Monitoring</label>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-card-title">CPU</div>
+                    <div class="progress"><div id="cpuUsage" class="progress-bar cpu-bar" style="width: 0%;"></div></div>
+                    <div id="cpuPercent" class="stat-percent">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-title">Memory</div>
+                    <div class="progress"><div id="memUsage" class="progress-bar mem-bar" style="width: 0%;"></div></div>
+                    <div id="memPercent" class="stat-percent">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-title">Disk</div>
+                    <div class="progress"><div id="diskUsage" class="progress-bar disk-bar" style="width: 0%;"></div></div>
+                    <div id="diskPercent" class="stat-percent">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-title">Network</div>
+                    <div class="progress"><div id="netUsage" class="progress-bar net-bar" style="width: 0%;"></div></div>
+                    <div id="netPercent" class="stat-percent">0%</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-card-title">Memory</div>
-                <div class="progress"><div id="memUsage" class="progress-bar mem-bar" style="width: 0%;"></div></div>
-                <div id="memPercent" class="stat-percent">0%</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-card-title">Disk</div>
-                <div class="progress"><div id="diskUsage" class="progress-bar disk-bar" style="width: 0%;"></div></div>
-                <div id="diskPercent" class="stat-percent">0%</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-card-title">Network</div>
-                <div class="progress"><div id="netUsage" class="progress-bar net-bar" style="width: 0%;"></div></div>
-                <div id="netPercent" class="stat-percent">0%</div>
+            <div id="deviceStatusAlert">正在获取系统状态...</div>
+            <div class="chart-container">
+                <canvas id="resourceChart"></canvas>
             </div>
         </div>
-        <div id="deviceStatusAlert">正在获取系统状态...</div>
-        <div class="chart-container">
-            <canvas id="resourceChart"></canvas>
+
+        <div class="connection-status" id="connection-status">检测连接中...</div>
+    </div>
+
+    <div class="chat-main">
+        <div class="chat-container" id="chat-container">
+            <div class="message ai-message">您好！我是部署在Rust服务框架上的AI助手。请选择模型和参数后开始对话。</div>
+            <div class="typing-indicator" id="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>
+        </div>
+        <div class="input-area">
+            <textarea id="user-input" placeholder="请输入您的问题..." rows="1"></textarea>
+            <button id="send-button" title="发送"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg></button>
         </div>
     </div>
-
-    <div class="connection-status" id="connection-status">检测连接中...</div>
-</div>
-
-<div class="chat-main">
-    <div class="chat-container" id="chat-container">
-        <div class="message ai-message">您好！我是部署在Rust服务框架上的AI助手。请选择模型和参数后开始对话。</div>
-        <div class="typing-indicator" id="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>
-    </div>
-    <div class="input-area">
-        <textarea id="user-input" placeholder="请输入您的问题..." rows="1"></textarea>
-        <button id="send-button" title="发送"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg></button>
-    </div>
-</div>
 
 <script>
     // --- Global Variables ---
@@ -253,14 +253,14 @@
     sendButton.addEventListener('click', sendMessage);
     userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     userInput.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = (this.scrollHeight) + 'px'; });
-
+    
     window.addEventListener('load', () => {
         checkServerHealth();
         initCharts(); // 初始化图表
         startSystemMonitoring(); // 启动系统监控
         userInput.focus();
     });
-
+    
     // --- Core Functions ---
     async function checkServerHealth() { /* ... function unchanged ... */ }
     function updateConnectionStatus(text, statusClass) { /* ... function unchanged ... */ }
@@ -335,7 +335,7 @@
         const mem = stats.memory[stats.memory.length - 1];
         const disk = stats.disk[stats.disk.length - 1];
         const net = stats.network[stats.network.length - 1];
-
+        
         // Update progress bars and percentages
         document.getElementById('cpuUsage').style.width = `${cpu}%`;
         document.getElementById('cpuPercent').textContent = `${cpu}%`;
@@ -383,7 +383,7 @@
             updateConnectionStatus("❌ 服务连接失败", "disconnected");
         }
     }
-
+    
     function updateConnectionStatus(text, statusClass) {
         connectionStatus.textContent = text;
         connectionStatus.className = 'connection-status';
@@ -391,7 +391,7 @@
             connectionStatus.classList.add(statusClass);
         }
     }
-
+    
     function addMessage(text, isUser) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${isUser ? 'user-message' : 'ai-message'}`;
@@ -399,20 +399,21 @@
         chatContainer.insertBefore(messageDiv, typingIndicator);
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
-
+    
     function showTypingIndicator() {
         typingIndicator.style.display = 'flex';
         chatContainer.scrollTop = chatContainer.scrollHeight;
         sendButton.disabled = true;
         userInput.disabled = true;
     }
-
+    
     function hideTypingIndicator() {
         typingIndicator.style.display = 'none';
         sendButton.disabled = false;
         userInput.disabled = false;
         userInput.focus();
     }
+    
     async function sendMessage() {
         const message = userInput.value.trim();
         if (!message) return;
