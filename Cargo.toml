@@ -1,29 +1,15 @@
 [package]
-name = "rustllm"
+name = "llm-rust"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-candle-datasets = {  version = "0.9.1" , optional = true }
-candle-nn = {  version = "0.9.1",features = ["cuda"]  }
-candle-transformers = { version = "0.9.1"  }
-candle-flash-attn = {  version = "0.9.1" , optional = true }
-candle-onnx = {  version = "0.9.1" , optional = true }
-candle-examples = "0.9.1"
-
-tokenizers = { version = "0.21.0", default-features = false, features = ["onig"] }
-candle-core = { version = "0.9.1",features = ["cuda"] }
-rand = "0.9.0"
-anyhow = "1"
-
-
-[dev-dependencies]
-anyhow = {  version = "1", features = ["backtrace"] }
-rand = { version = "0.9.0" }
-
-
-[build-dependencies]
-anyhow = { version = "1", features = ["backtrace"] }
-
-[features]
-default = []
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+sysinfo = "0.37"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

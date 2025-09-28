@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>本地 LLM 前端</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #fafafa; }
+        #status { margin-bottom: 10px; }
+        .connected { color: green; }
+        .disconnected { color: red; }
+        .warning { color: orange; }
+        #chat-box { border: 1px solid #ccc; padding: 10px; height: 300px; overflow-y: auto; background: #fff; }
+        #controls { margin-top: 10px; }
+        label { display: block; margin: 5px 0; }
+        canvas { max-width: 600px; margin-top: 20px; background: #fff; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+<h1>本地 LLM 前端</h1>
+<div id="status">连接状态: <span id="connection-status">检测中...</span></div>
+
+<label>选择模型:
+    <select id="model-select">
+        <option value="default">default</option>
+        <option value="qwen2">qwen2</option>
+        <option value="llama-2">llama-2</option>
+    </select>
+</label>
+
+<label>Temperature:
+    <input type="range" id="temperature-slider" min="0" max="1" step="0.05" value="0.7">
+    <span id="temperature-value">0.7</span>
+</label>
+
+<label>Top-p:
+    <input type="range" id="top-p-slider" min="0" max="1" step="0.05" value="0.9">
+    <span id="top-p-value">0.9</span>
+</label>
+
+<div id="chat-box"></div>
+
+<div id="controls">
+    <input type="text" id="message-input" placeholder="输入消息..." />
+    <button onclick="sendMessage()">发送</button>
+</div>
+
+<h2>系统监控</h2>
+<canvas id="cpu-chart" width="600" height="150"></canvas>
+<canvas id="mem-chart" width="600" height="150"></canvas>
+<canvas id="disk-chart" width="600" height="150"></canvas>
+<canvas id="net-chart" width="600" height="150"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const statusEl = document.getElementById("connection-status");
+    const tempSlider = document.getElementById("temperature-slider");
+    const tempVal = document.getElementById("temperature-value");
+    const topPSlider = document.getElementById("top-p-slider");
+    const topPVal = document.getElementById("top-p-value");
+
+    tempSlider.oninput = () => tempVal.textContent = tempSlider.value;
+    topPSlider.oninput = () => topPVal.textContent = topPSlider.value;
+
+    async function checkServerHealth() {
+        try {
+            const resp = await fetch("/api/health");
+            if (!resp.ok) {
+                updateStatus("❌ Rust 服务异常", "disconnected");
+                return;
+            }
+            const data = await resp.json();
+            if (data.status === "ok" && data.llama === "ok") {
+                updateStatus("✅ Rust + Llama 正常", "connected");
+            } else if (data.status === "ok" && data.llama !== "ok") {
+                updateStatus("⚠️ Rust 正常，但 Llama 不可用", "warning");
+            } else {
+                updateStatus("❌ 未知错误", "disconnected");
+            }
+        } catch (e) {
+            updateStatus("❌ 无法连接 Rust 服务", "disconnected");
+        }
+    }
+
+    function updateStatus(msg, cls) {
+        statusEl.textContent = msg;
+        statusEl.className = cls;
+    }
+
+    async function sendMessage() {
+        const msg = document.getElementById("message-input").value;
+        if (!msg) return;
+
+        const model = document.getElementById("model-select").value;
+        const temperature = parseFloat(tempSlider.value);
+        const top_p = parseFloat(topPSlider.value);
+
+        const chatBox = document.getElementById("chat-box");
+        chatBox.innerHTML += `<div><b>你:</b> ${msg}</div>`;
+
+        try {
+            const resp = await fetch("/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: msg, model, temperature, top_p })
+            });
+            const data = await resp.json();
+            if (data.response) {
+                chatBox.innerHTML += `<div><b>模型:</b> ${data.response}</div>`;
+            } else if (data.error) {
+                chatBox.innerHTML += `<div style="color:red"><b>错误:</b> ${data.error}</div>`;
+            }
+        } catch (e) {
+            chatBox.innerHTML += `<div style="color:red"><b>异常:</b> ${e}</div>`;
+        }
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // ---------------- 系统监控图表 ----------------
+    const cpuChart = new Chart(document.getElementById("cpu-chart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "CPU %", data: [] }] },
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+    });
+    const memChart = new Chart(document.getElementById("mem-chart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "内存 %", data: [] }] },
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+    });
+    const diskChart = new Chart(document.getElementById("disk-chart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "磁盘 %", data: [] }] },
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+    });
+    const netChart = new Chart(document.getElementById("net-chart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "网络 %", data: [] }] },
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+    });
+
+    async function updateSystemStats() {
+        try {
+            const resp = await fetch("/api/system_stats");
+            if (!resp.ok) return;
+            const data = await resp.json();
+            updateChart(cpuChart, data.cpu);
+            updateChart(memChart, data.memory);
+            updateChart(diskChart, data.disk);
+            updateChart(netChart, data.network);
+        } catch (e) {
+            console.error("系统监控失败", e);
+        }
+    }
+
+    function updateChart(chart, arr) {
+        chart.data.labels = arr.map((_, i) => i);
+        chart.data.datasets[0].data = arr;
+        chart.update();
+    }
+
+    // ---------------- 启动循环 ----------------
+    setInterval(checkServerHealth, 3000);
+    setInterval(updateSystemStats, 3000);
+    checkServerHealth();
+    updateSystemStats();
+</script>
+</body>
+</html>

@@ -1,286 +1,262 @@
-use candle_core::{quantized::gguf_file, Device, Tensor};
-use candle_examples::token_output_stream::TokenOutputStream;
-// 导入 Model 类型
-use candle_transformers::generation::{LogitsProcessor, Sampling};
-use std::{io::Write, path::PathBuf, str::FromStr};
-use tokenizers::Tokenizer;
-//千问量化模型
-use candle_transformers::models::quantized_qwen2::ModelWeights;
-use rand::prelude::*;
-use anyhow::Result;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::{get, post},
+    Json, Router,
+};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
+use axum::routing::get_service;
+use tokio::sync::Mutex;
+use sysinfo::{Networks, System, Disks};
+use tower_http::{
+    services::fs::ServeDir,
+    cors::{CorsLayer, Any},
+};
+use tower_http::services::ServeFile;
+use tracing::dispatcher::get_default;
+use tracing_subscriber;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    println!("is_cuda={}", device.is_cuda());
+const SAMPLE_CAPACITY: usize = 60;
 
-    let (mut model, tokenizer) = get_model_and_tokenizer(
-        &device,
-        "F:/shixun/model-fast/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        "F:/shixun/model-fast/tokenizer.json",
-    )
-        .unwrap();
-    println!("model and tokenizer load ok");
-
-
-
-    // The seed to use when generating random samples.
-    // 不同的seed会导致不同的输出
-    let seed = rand::random_range(200_000_000..400_000_000);
-
-    let text_generation = TextGeneration::new(0.8, 1.1, 64, seed, None, None, false);
-
-
-    let token_ids =
-        get_prompt_tokens("我有一个苹果,一个橙子,一颗白菜 请给它们分类", &tokenizer).unwrap();
-    println!(
-        "{}",
-        text_generation
-            .generate(&token_ids, &mut model, &tokenizer, &device)
-            .unwrap()
-    );
-
-    println!("==========================================================");
-
-
-
-    let token_ids = get_prompt_tokens("'洋娃娃和小熊跳舞' 下一句是什么?", &tokenizer).unwrap();
-    println!(
-        "{}",
-        text_generation
-            .generate(&token_ids, &mut model, &tokenizer, &device)
-            .unwrap()
-    );
-
-
-    println!("==========================================================");
-
-    let prompt_str =
-        get_prompt_str("帮我发邮件给Tom, 内容是:有内鬼,交易终止! Tom的邮箱地址是: tom@example.com");
-    let token_ids = get_prompt_tokens(&prompt_str, &tokenizer).unwrap();
-    println!(
-        "{}",
-        text_generation
-            .generate(&token_ids, &mut model, &tokenizer, &device)
-            .unwrap()
-    );
-
-
-    println!("==========================================================");
-
-    let prompt_str =
-        get_prompt_str("帮我发短信给Tom, 内容是:有内鬼,交易终止! Tom的手机号是: 139000002222");
-    let token_ids = get_prompt_tokens(&prompt_str, &tokenizer).unwrap();
-    println!(
-        "{}",
-        text_generation
-            .generate(&token_ids, &mut model, &tokenizer, &device)
-            .unwrap()
-    );
-
-    println!("==========================================================");
-
-    Ok(())
+#[derive(Clone)]
+struct AppState {
+    client: Client,
+    llama_base: String,
+    metrics: Arc<Metrics>,
 }
 
-fn get_prompt_str(user_input: &str) -> String {
-    format!(
-        r#"
-```
-{user_input}
-```
-你是一个AI助手, 可以帮我识别用户的意图, 请帮我识别上面的用户意图, 并帮我把关键信息整理下方样式的json格式:
-```
-{{
-    "action": "{{意图枚举}}",
-    "data": "{{关键信息}}"
-}}
-```
-意图枚举: send_email, tel_phone
-如果意图是send_email, 关键信息: {{ email: "xxx@xxxx", to_user: "xxx", message: "" }}
-如果意图是tel_phone, 关键信息: {{ phone: "139xxxxxx", message: "" }}
-    "#
-    )
+struct Metrics {
+    cpu: Mutex<VecDeque<f32>>,
+    memory: Mutex<VecDeque<f32>>,
+    disk: Mutex<VecDeque<f32>>,
+    network: Mutex<VecDeque<f32>>,
+    prev_net_total: Mutex<u128>,
 }
 
-struct TextGeneration {
-    temperature: f64,
-
-    // 重复抑制
-    // 重复惩罚系数（类似HF的repetition_penalty）：
-    // - 值>1.0时抑制重复（如1.2增加20%重复token的loss）
-    // - 值<1.0时允许重复（如0.8降低20%惩罚）
-    repeat_penalty: f32,
-
-    // 回溯窗口长度（类似HF的repeat_last_n）：
-    // - 检查最近N个token是否重复
-    // - 典型值64（平衡性能与抑制效果）
-    repeat_last_n: usize,
-
-    seed: u64,
-    top_p: Option<f64>,
-    top_k: Option<usize>,
-    split_prompt: bool,
-}
-
-impl TextGeneration {
-    pub fn new(
-        temperature: f64,
-        repeat_penalty: f32,
-        repeat_last_n: usize,
-        seed: u64,
-        top_p: Option<f64>,
-        top_k: Option<usize>,
-        split_prompt: bool,
-    ) -> Self {
+impl Metrics {
+    fn new() -> Self {
         Self {
-            temperature,
-            repeat_penalty,
-            repeat_last_n,
-            seed,
-            top_p,
-            top_k,
-            split_prompt,
+            cpu: Mutex::new(VecDeque::with_capacity(SAMPLE_CAPACITY)),
+            memory: Mutex::new(VecDeque::with_capacity(SAMPLE_CAPACITY)),
+            disk: Mutex::new(VecDeque::with_capacity(SAMPLE_CAPACITY)),
+            network: Mutex::new(VecDeque::with_capacity(SAMPLE_CAPACITY)),
+            prev_net_total: Mutex::new(0),
         }
-    }
-
-    pub fn generate(
-        &self,
-        input_tokens: &[u32],
-        model: &mut ModelWeights,
-        tokenizer: &Tokenizer,
-        device: &Device,
-    ) -> anyhow::Result<String> {
-        let temperature = self.temperature;
-        let mut logits_processor = {
-            let sampling = if temperature <= 0. {
-                Sampling::ArgMax
-            } else {
-                match (self.top_k, self.top_p) {
-                    (None, None) => Sampling::All { temperature },
-                    (Some(k), None) => Sampling::TopK { k, temperature },
-                    (None, Some(p)) => Sampling::TopP { p, temperature },
-                    (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-                }
-            };
-            LogitsProcessor::from_sampling(self.seed, sampling)
-        };
-
-        let mut next_token = if !self.split_prompt {
-            let input = Tensor::new(input_tokens, &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, 0).unwrap();
-            let logits = logits.squeeze(0)?;
-            logits_processor.sample(&logits)?
-        } else {
-            let mut next_token = 0;
-            for (pos, token) in input_tokens.iter().enumerate() {
-                let input = Tensor::new(&[*token], &device)?.unsqueeze(0)?;
-                let logits = model.forward(&input, pos)?;
-                let logits = logits.squeeze(0)?;
-                next_token = logits_processor.sample(&logits)?
-            }
-            next_token
-        };
-        let mut all_tokens = vec![];
-        all_tokens.push(next_token);
-
-        let mut tos = TokenOutputStream::new(tokenizer.clone());
-        if let Some(t) = tos.next_token(next_token)? {
-            // print!("{t}");
-            // std::io::stdout().flush()?;
-        }
-        let eos_token = tos
-            .tokenizer()
-            .get_vocab(true)
-            .get("<|im_end|>")
-            .unwrap()
-            .clone();
-
-        for index in 0..999 {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, input_tokens.len() + index)?;
-            let logits = logits.squeeze(0)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
-            } else {
-                let start_at = all_tokens.len().saturating_sub(self.repeat_last_n);
-                candle_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &all_tokens[start_at..],
-                )?
-            };
-            next_token = logits_processor.sample(&logits)?;
-            all_tokens.push(next_token);
-            if let Some(t) = tos.next_token(next_token)? {
-                // print!("{t}");
-                // std::io::stdout().flush()?;
-            }
-            if next_token == eos_token {
-                break;
-            };
-        }
-        if let Some(rest) = tos.decode_rest().map_err(candle_core::Error::msg)? {
-            // println!("{rest}");
-        }
-        // std::io::stdout().flush()?;
-
-        let result_msg = tos.tokenizer().decode(&all_tokens, true).unwrap();
-        Ok(result_msg)
     }
 }
 
-fn get_prompt_tokens(prompt_str: &str, tokenizer: &Tokenizer) -> anyhow::Result<Vec<u32>> {
-    let prompt_str = format!(
-        "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-        prompt_str
-    );
-    print!("formatted instruct prompt: {}", &prompt_str);
-
-    let prompt_tokens = tokenizer.encode(prompt_str, true).unwrap();
-
-    Ok(prompt_tokens.get_ids().to_vec())
+#[derive(Deserialize)]
+struct ChatRequest {
+    message: String,
+    model: String,
+    temperature: f32,
+    top_p: f32,
 }
 
-fn get_model_and_tokenizer(
-    device: &Device,
-    model_path: &str,
-    tokenizer_path: &str,
-) -> anyhow::Result<(ModelWeights, Tokenizer)> {
-    // 读取 GGUF 模型文件
-    let model_path = PathBuf::from_str(model_path).unwrap();
-    let mut model_file = std::fs::File::open(&model_path)?;
+#[derive(Serialize)]
+struct ChatResponse {
+    response: String,
+}
 
-    let model = {
-        let model =
-            gguf_file::Content::read(&mut model_file).map_err(|e| e.with_path(model_path))?;
-        let mut total_size_in_bytes = 0;
-        for (_, tensor) in model.tensor_infos.iter() {
-            let elem_count = tensor.shape.elem_count();
-            total_size_in_bytes +=
-                elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
-        }
-        println!(
-            "loaded {:?} tensors ({}) ",
-            model.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
-        );
-        ModelWeights::from_gguf(model, &mut model_file, &device)?
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    llama: String,
+    message: String,
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let llama_base =
+        std::env::var("LLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let metrics = Arc::new(Metrics::new());
+    spawn_metrics_collector(metrics.clone());
+
+    let state = AppState {
+        client,
+        llama_base,
+        metrics,
     };
 
-    // 创建 Tokenizer
-    let tokenizer = Tokenizer::from_file(tokenizer_path).unwrap();
+    // 静态文件服务（假设前端 HTML 在 ./static 目录）
+    let static_files = ServeFile::new("./static/index.html");
 
-    Ok((model, tokenizer))
+    //构建路由
+    let app = Router::new()
+        .route("/", get_service(static_files))
+        .route("/api/health", get(health_handler))
+        .route("/api/chat", post(chat_handler))
+        .route("/api/system_stats", get(system_stats_handler))
+        .with_state(state)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
+
+    // let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    // 绑定并启动
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3002").await.unwrap();
+    println!("🚀 Rust LLM Service running at http://127.0.0.1:3002");
+    axum::serve(listener, app).await.unwrap();
 }
 
-fn format_size(size_in_bytes: usize) -> String {
-    if size_in_bytes < 1_000 {
-        format!("{}B", size_in_bytes)
-    } else if size_in_bytes < 1_000_000 {
-        format!("{:.2}KB", size_in_bytes as f64 / 1e3)
-    } else if size_in_bytes < 1_000_000_000 {
-        format!("{:.2}MB", size_in_bytes as f64 / 1e6)
-    } else {
-        format!("{:.2}GB", size_in_bytes as f64 / 1e9)
+// ---------------- Handlers ----------------
+
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let llama_health = check_llama_health(&state.client, &state.llama_base).await;
+    let (llama, msg) = match llama_health {
+        Ok(true) => ("ok".to_string(), "Backend + Llama connected".to_string()),
+        Ok(false) => ("loading_or_error".to_string(), "Backend ok, llama not ready".to_string()),
+        Err(e) => ("unreachable".to_string(), format!("Backend ok, llama unreachable: {}", e)),
+    };
+    let res = HealthResponse {
+        status: "ok".to_string(),
+        llama,
+        message: msg,
+    };
+    (StatusCode::OK, Json(res))
+}
+
+async fn check_llama_health(client: &Client, base: &str) -> Result<bool, String> {
+    let url = format!("{}/health", base.trim_end_matches('/'));
+    match client.get(&url).send().await {
+        Ok(resp) => Ok(resp.status().is_success()),
+        Err(e) => Err(format!("{:?}", e)),
     }
+}
+
+async fn chat_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> impl IntoResponse {
+    let target = format!("{}/v1/chat/completions", state.llama_base.trim_end_matches('/'));
+    let payload = json!({
+        "model": req.model,
+        "messages": [{"role":"user","content": req.message}],
+        "temperature": req.temperature,
+        "top_p": req.top_p
+    });
+
+    match state.client.post(&target).json(&payload).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"error": format!("llama returned {}", resp.status())})),
+                );
+            }
+
+            let v: serde_json::Value = resp.json().await.unwrap_or(json!({}));
+            let reply = v["choices"]
+                .get(0)
+                .and_then(|c| c["message"]["content"].as_str())
+                .unwrap_or("[无返回]")
+                .to_string();
+
+            // 返回统一的 JSON（用 Value 包裹）
+            (
+                StatusCode::OK,
+                Json(json!({ "response": reply })),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": format!("cannot reach llama-server: {}", e)})),
+        ),
+    }
+}
+
+async fn system_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let cpu = state.metrics.cpu.lock().await.clone().into_iter().collect::<Vec<_>>();
+    let memory = state.metrics.memory.lock().await.clone().into_iter().collect::<Vec<_>>();
+    let disk = state.metrics.disk.lock().await.clone().into_iter().collect::<Vec<_>>();
+    let network = state.metrics.network.lock().await.clone().into_iter().collect::<Vec<_>>();
+
+    let body = json!({
+        "cpu": cpu,
+        "memory": memory,
+        "disk": disk,
+        "network": network,
+    });
+    (StatusCode::OK, Json(body))
+}
+
+// 静态文件未找到时返回 404
+async fn handle_404() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, Html("<h1>404 Not Found</h1><p>Resource not found.</p>"))
+}
+
+// ---------------- Metrics ----------------
+
+fn spawn_metrics_collector(metrics: Arc<Metrics>) {
+    tokio::spawn(async move {
+        let mut sys = System::new_all();
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut net = Networks::new();
+        let mut disks = Disks::new();
+        loop {
+            interval.tick().await;
+            sys.refresh_cpu_usage();
+            sys.refresh_memory();
+            disks.refresh(false);
+            net.refresh(false);
+
+            let cpu_pct = sys.global_cpu_usage();
+
+            let total_mem = sys.total_memory() as f32;
+            let used_mem = (sys.total_memory() - sys.available_memory()) as f32;
+            let mem_pct = if total_mem > 0.0 { used_mem / total_mem * 100.0 } else { 0.0 };
+
+            let mut total_space: u128 = 0;
+            let mut avail_space: u128 = 0;
+            for disk in disks.iter() {
+                total_space += disk.total_space() as u128;
+                avail_space += disk.available_space() as u128;
+            }
+            let disk_pct = if total_space > 0 {
+                (total_space - avail_space) as f32 / total_space as f32 * 100.0
+            } else {
+                0.0
+            };
+
+            let mut net_total: u128 = 0;
+            for (_name, data) in net.list(){
+                net_total += (data.received() as u128) + (data.transmitted() as u128);
+            }
+            let mut prev = metrics.prev_net_total.lock().await;
+            let delta = net_total.saturating_sub(*prev);
+            *prev = net_total;
+            drop(prev);
+
+            let bytes_per_sec = (delta as f64) / 5.0;
+            let mbps = (bytes_per_sec * 8.0) / (1024.0 * 1024.0);
+            let net_pct = ((mbps / 1000.0) * 100.0).min(100.0) as f32;
+
+            push(&metrics.cpu, cpu_pct).await;
+            push(&metrics.memory, mem_pct).await;
+            push(&metrics.disk, disk_pct).await;
+            push(&metrics.network, net_pct).await;
+        }
+    });
+}
+
+async fn push(m: &Mutex<VecDeque<f32>>, val: f32) {
+    let mut dq = m.lock().await;
+    if dq.len() >= SAMPLE_CAPACITY {
+        dq.pop_front();
+    }
+    dq.push_back((val * 100.0).round() / 100.0);
 }

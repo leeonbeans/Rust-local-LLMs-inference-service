@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>本地 LLM 前端</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    /* 1. 整体布局和字体 */
+    body {
+      font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f4f7f6;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h1 {
+      color: #007bff;
+      margin-bottom: 30px;
+      font-weight: 300;
+    }
+
+    /* 状态信息 */
+    #status {
+      padding: 8px 15px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      font-weight: bold;
+      background-color: #fff;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+      width: 100%;
+      max-width: 1200px;
+      text-align: center;
+    }
+    .connected { color: #28a745; }
+    .disconnected { color: #dc3545; }
+    .warning { color: #ffc107; }
+
+    /* 聊天和控制容器 (核心布局：左侧栏 + 主内容区) */
+    #chat-container {
+      display: flex;
+      gap: 20px;
+      width: 100%;
+      max-width: 1200px;
+    }
+
+    /* ---------------- 左侧边栏 ---------------- */
+    #left-sidebar {
+      flex: 0 0 320px; /* 固定宽度略微增加，以容纳图表 */
+      display: flex;
+      flex-direction: column;
+      gap: 20px; /* 参数面板和监控面板之间的间距 */
+    }
+
+    /* 参数控制面板 */
+    #parameters {
+      padding: 20px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      height: fit-content;
+      display: flex;
+      flex-direction: column;
+    }
+    #parameters label {
+      margin: 10px 0;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    select, input[type="range"] {
+      width: 100%;
+      margin-top: 5px;
+    }
+    select {
+      padding: 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      background-color: #fff;
+    }
+
+    /* 系统监控区域 (新的左下角位置) */
+    .monitor-header {
+      font-size: 16px;
+      font-weight: 500;
+      color: #6c757d;
+      margin-bottom: 10px;
+      padding: 0 20px;
+    }
+    #system-monitor {
+      padding: 10px 0;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    .monitor-item {
+      padding: 0 10px 10px 10px; /* 调整图表间的内边距 */
+    }
+    canvas {
+      width: 100% !important;
+      height: 80px !important; /* 显著缩小图表高度 */
+      max-width: none;
+      background: #ffffff;
+      border: none;
+      padding: 0;
+      box-shadow: none;
+    }
+
+    /* ---------------- 主内容区 (聊天) ---------------- */
+    .chat-main {
+      flex-grow: 1; /* 占据剩余空间 */
+      display: flex;
+      flex-direction: column;
+    }
+    #chat-box {
+      flex-grow: 1;
+      border: none;
+      padding: 15px;
+      min-height: 550px; /* 增加最小高度 */
+      overflow-y: auto;
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    #chat-box > div {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 12px;
+      line-height: 1.5;
+      max-width: 85%;
+    }
+    /* 用户消息 (奇数项) */
+    #chat-box > div:nth-child(odd) {
+      background-color: #007bff;
+      color: white;
+      margin-left: auto;
+      border-bottom-right-radius: 4px;
+    }
+    /* 模型消息 (偶数项) */
+    #chat-box > div:nth-child(even) {
+      background-color: #e9ecef;
+      color: #333;
+      margin-right: auto;
+      border-bottom-left-radius: 4px;
+    }
+    #chat-box b {
+      font-weight: bold;
+      color: inherit;
+    }
+    #chat-box > div:nth-child(odd) b {
+      color: white;
+    }
+    #chat-box > div:nth-child(even) b {
+      color: #007bff;
+    }
+    #chat-box div[style*="color:red"] {
+      background-color: #f8d7da !important;
+      border: 1px solid #f5c6cb;
+      color: #721c24 !important;
+      margin: 10px auto;
+      text-align: center;
+    }
+
+    /* 输入和发送按钮 */
+    #controls {
+      display: flex;
+      margin-top: 10px;
+      width: 100%;
+    }
+
+    #message-input {
+      flex-grow: 1;
+      padding: 12px;
+      border: 1px solid #ced4da;
+      border-radius: 6px 0 0 6px;
+      font-size: 16px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    #message-input:focus {
+      border-color: #007bff;
+      box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+      outline: none;
+    }
+
+    #controls button {
+      padding: 12px 25px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      cursor: pointer;
+      border-radius: 0 6px 6px 0;
+      transition: background-color 0.3s, transform 0.1s;
+      font-size: 16px;
+    }
+    #controls button:hover {
+      background-color: #0056b3;
+    }
+    #controls button:active {
+      transform: scale(0.98);
+    }
+
+    /* 移动设备适配 */
+    @media (max-width: 768px) {
+      #chat-container {
+        flex-direction: column;
+      }
+      #left-sidebar {
+        flex: 1 1 auto;
+        width: 100%;
+      }
+      #system-monitor {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr); /* 在小屏幕上，监控分成两列 */
+        gap: 10px;
+        padding: 15px;
+      }
+      .monitor-item {
+        padding: 0;
+      }
+      canvas {
+        height: 100px !important;
+      }
+    }
+  </style>
+</head>
+<body>
+<h1>本地 LLM 前端</h1>
+<div id="status">连接状态: <span id="connection-status">检测中...</span></div>
+
+<div id="chat-container">
+
+  <div id="left-sidebar">
+    <div id="parameters">
+      <label>选择模型:
+        <select id="model-select">
+          <option value="default">default</option>
+          <option value="qwen2">qwen2</option>
+          <option value="llama-2">llama-2</option>
+        </select>
+      </label>
+
+      <label>Temperature (<span id="temperature-value">0.7</span>):
+        <input type="range" id="temperature-slider" min="0" max="1" step="0.05" value="0.7">
+      </label>
+
+      <label>Top-p (<span id="top-p-value">0.9</span>):
+        <input type="range" id="top-p-slider" min="0" max="1" step="0.05" value="0.9">
+      </label>
+    </div>
+
+    <div id="system-monitor">
+      <div class="monitor-header">系统监控 (实时)</div>
+      <div class="monitor-item">
+        <canvas id="cpu-chart" width="300" height="80"></canvas>
+      </div>
+      <div class="monitor-item">
+        <canvas id="mem-chart" width="300" height="80"></canvas>
+      </div>
+      <div class="monitor-item">
+        <canvas id="disk-chart" width="300" height="80"></canvas>
+      </div>
+      <div class="monitor-item">
+        <canvas id="net-chart" width="300" height="80"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="chat-main">
+    <div id="chat-box"></div>
+    <div id="controls">
+      <input type="text" id="message-input" placeholder="输入消息..." />
+      <button onclick="sendMessage()">发送</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const statusEl = document.getElementById("connection-status");
+  const tempSlider = document.getElementById("temperature-slider");
+  const tempVal = document.getElementById("temperature-value");
+  const topPSlider = document.getElementById("top-p-slider");
+  const topPVal = document.getElementById("top-p-value");
+
+  tempSlider.oninput = () => tempVal.textContent = tempSlider.value;
+  topPSlider.oninput = () => topPVal.textContent = topPSlider.value;
+
+  async function checkServerHealth() {
+    try {
+      const resp = await fetch("/api/health");
+      if (!resp.ok) {
+        updateStatus("❌ Rust 服务异常", "disconnected");
+        return;
+      }
+      const data = await resp.json();
+      if (data.status === "ok" && data.llama === "ok") {
+        updateStatus("✅ Rust + Llama 正常", "connected");
+      } else if (data.status === "ok" && data.llama !== "ok") {
+        updateStatus("⚠️ Rust 正常，但 Llama 不可用", "warning");
+      } else {
+        updateStatus("❌ 未知错误", "disconnected");
+      }
+    } catch (e) {
+      updateStatus("❌ 无法连接 Rust 服务", "disconnected");
+    }
+  }
+
+  function updateStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = cls;
+  }
+
+  async function sendMessage() {
+    const msgInput = document.getElementById("message-input");
+    const msg = msgInput.value.trim();
+    if (!msg) return;
+
+    // 清空输入框
+    msgInput.value = "";
+
+    const model = document.getElementById("model-select").value;
+    const temperature = parseFloat(tempSlider.value);
+    const top_p = parseFloat(topPSlider.value);
+
+    const chatBox = document.getElementById("chat-box");
+    chatBox.innerHTML += `<div><b>你:</b> ${msg}</div>`;
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    try {
+      const resp = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg, model, temperature, top_p })
+      });
+      const data = await resp.json();
+      if (data.response) {
+        chatBox.innerHTML += `<div><b>模型:</b> ${data.response}</div>`;
+      } else if (data.error) {
+        chatBox.innerHTML += `<div style="color:red"><b>错误:</b> ${data.error}</div>`;
+      }
+    } catch (e) {
+      chatBox.innerHTML += `<div style="color:red"><b>异常:</b> 无法连接到聊天服务。</div>`;
+    }
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  // ---------------- 系统监控图表 ----------------
+  // 基础图表配置
+  const baseChartOptions = {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        min: 0,
+        max: 100,
+        title: { display: true, text: '%' },
+        ticks: { stepSize: 50 } /* 优化侧边栏的刻度显示 */
+      },
+      x: {
+        display: false
+      }
+    },
+    plugins: {
+      legend: { display: true, labels: { boxWidth: 10, padding: 5 } }, /* 缩小图例 */
+      title: { display: false }
+    },
+    layout: {
+      padding: { top: 5, bottom: 0, left: 0, right: 10 }
+    }
+  };
+
+  const cpuChart = new Chart(document.getElementById("cpu-chart"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "CPU %", data: [], borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] },
+    options: baseChartOptions
+  });
+  const memChart = new Chart(document.getElementById("mem-chart"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "内存 %", data: [], borderColor: '#28a745', backgroundColor: 'rgba(40, 167, 69, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] },
+    options: baseChartOptions
+  });
+  const diskChart = new Chart(document.getElementById("disk-chart"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "磁盘 %", data: [], borderColor: '#ffc107', backgroundColor: 'rgba(255, 193, 7, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] },
+    options: baseChartOptions
+  });
+  const netChart = new Chart(document.getElementById("net-chart"), {
+    type: "line",
+    data: { labels: [], datasets: [{ label: "网络 %", data: [], borderColor: '#dc3545', backgroundColor: 'rgba(220, 53, 69, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] },
+    options: baseChartOptions
+  });
+
+  async function updateSystemStats() {
+    try {
+      const resp = await fetch("/api/system_stats");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const MAX_POINTS = 20;
+      updateChart(cpuChart, data.cpu, MAX_POINTS);
+      updateChart(memChart, data.memory, MAX_POINTS);
+      updateChart(diskChart, data.disk, MAX_POINTS);
+      updateChart(netChart, data.network, MAX_POINTS);
+    } catch (e) {
+      console.error("系统监控失败", e);
+    }
+  }
+
+  function updateChart(chart, arr, maxPoints) {
+    let data = arr;
+    if (arr.length > maxPoints) {
+      data = arr.slice(-maxPoints);
+    }
+    chart.data.labels = data.map((_, i) => i);
+    chart.data.datasets[0].data = data;
+    chart.update();
+  }
+
+  // ---------------- 启动循环 ----------------
+  setInterval(checkServerHealth, 3000);
+  setInterval(updateSystemStats, 3000);
+  checkServerHealth();
+  updateSystemStats();
+</script>
+</body>
+</html>
