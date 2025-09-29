@@ -7,17 +7,16 @@ use axum::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use axum::routing::get_service;
 use tokio::sync::Mutex;
 use sysinfo::{Networks, System, Disks};
 use tower_http::{
-    services::fs::ServeDir,
     cors::{CorsLayer, Any},
+    services::ServeFile,
 };
-use tower_http::services::ServeFile;
-use tracing::dispatcher::get_default;
+use sqlx::{Pool, Sqlite, SqlitePool, Row};
 use tracing_subscriber;
 
 const SAMPLE_CAPACITY: usize = 60;
@@ -27,6 +26,7 @@ struct AppState {
     client: Client,
     llama_base: String,
     metrics: Arc<Metrics>,
+    db: Pool<Sqlite>, // 新增 SQLite 连接池
 }
 
 struct Metrics {
@@ -55,11 +55,7 @@ struct ChatRequest {
     model: String,
     temperature: f32,
     top_p: f32,
-}
-
-#[derive(Serialize)]
-struct ChatResponse {
-    response: String,
+    reset: Option<bool>, // 新增，支持清空对话
 }
 
 #[derive(Serialize)]
@@ -72,6 +68,19 @@ struct HealthResponse {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    // 初始化 SQLite
+    let db = SqlitePool::connect("sqlite://chat.db?mode=rwc").await.unwrap();
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        "#
+    ).execute(&db).await.unwrap();
 
     let llama_base =
         std::env::var("LLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
@@ -86,17 +95,19 @@ async fn main() {
         client,
         llama_base,
         metrics,
+        db,
     };
 
-    // 静态文件服务（假设前端 HTML 在 ./static 目录）
+    // 静态文件服务
     let static_files = ServeFile::new("./static/index.html");
 
-    //构建路由
+    // 构建路由
     let app = Router::new()
         .route("/", get_service(static_files))
         .route("/api/health", get(health_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/system_stats", get(system_stats_handler))
+        .route("/api/history", get(history_handler)) // 新增历史接口
         .with_state(state)
         .layer(
             CorsLayer::new()
@@ -104,8 +115,6 @@ async fn main() {
                 .allow_methods(Any)
                 .allow_headers(Any),
         );
-
-    // let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     // 绑定并启动
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3002").await.unwrap();
@@ -115,6 +124,7 @@ async fn main() {
 
 // ---------------- Handlers ----------------
 
+// 健康检查
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let llama_health = check_llama_health(&state.client, &state.llama_base).await;
     let (llama, msg) = match llama_health {
@@ -138,14 +148,43 @@ async fn check_llama_health(client: &Client, base: &str) -> Result<bool, String>
     }
 }
 
+// 聊天（带上下文 + SQLite）
 async fn chat_handler(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
+    if req.reset.unwrap_or(false) {
+        sqlx::query("DELETE FROM chat_history").execute(&state.db).await.ok();
+        return (StatusCode::OK, Json(json!({"response": "[历史已清空]"})));
+    }
+
+    // 保存用户消息
+    sqlx::query("INSERT INTO chat_history (role, content) VALUES (?, ?)")
+        .bind("user")
+        .bind(&req.message)
+        .execute(&state.db)
+        .await
+        .ok();
+
+    // 获取最近 20 条历史
+    let rows = sqlx::query("SELECT role, content FROM chat_history ORDER BY id DESC LIMIT 20")
+        .fetch_all(&state.db)
+        .await
+        .unwrap();
+
+    let history: Vec<Value> = rows.into_iter()
+        .rev()
+        .map(|r| {
+            let role: String = r.get("role");
+            let content: String = r.get("content");
+            json!({"role": role, "content": content})
+        })
+        .collect();
+
     let target = format!("{}/v1/chat/completions", state.llama_base.trim_end_matches('/'));
     let payload = json!({
         "model": req.model,
-        "messages": [{"role":"user","content": req.message}],
+        "messages": history,
         "temperature": req.temperature,
         "top_p": req.top_p
     });
@@ -159,18 +198,22 @@ async fn chat_handler(
                 );
             }
 
-            let v: serde_json::Value = resp.json().await.unwrap_or(json!({}));
+            let v: Value = resp.json().await.unwrap_or(json!({}));
             let reply = v["choices"]
                 .get(0)
                 .and_then(|c| c["message"]["content"].as_str())
                 .unwrap_or("[无返回]")
                 .to_string();
 
-            // 返回统一的 JSON（用 Value 包裹）
-            (
-                StatusCode::OK,
-                Json(json!({ "response": reply })),
-            )
+            // 保存助手回复
+            sqlx::query("INSERT INTO chat_history (role, content) VALUES (?, ?)")
+                .bind("assistant")
+                .bind(&reply)
+                .execute(&state.db)
+                .await
+                .ok();
+
+            (StatusCode::OK, Json(json!({ "response": reply })))
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -179,6 +222,28 @@ async fn chat_handler(
     }
 }
 
+// 历史查询
+async fn history_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // 查询最近 20 条（按 id 倒序，最后再反转成正序，保证显示从旧到新）
+    let rows = sqlx::query("SELECT role, content FROM chat_history ORDER BY id DESC LIMIT 20")
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let mut history: Vec<serde_json::Value> = rows
+        .into_iter()
+        .rev()
+        .map(|r| {
+            let role: String = r.get("role");
+            let content: String = r.get("content");
+            json!({ "role": role, "content": content })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(history))
+}
+
+// 系统监控
 async fn system_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
     let cpu = state.metrics.cpu.lock().await.clone().into_iter().collect::<Vec<_>>();
     let memory = state.metrics.memory.lock().await.clone().into_iter().collect::<Vec<_>>();
@@ -192,11 +257,6 @@ async fn system_stats_handler(State(state): State<AppState>) -> impl IntoRespons
         "network": network,
     });
     (StatusCode::OK, Json(body))
-}
-
-// 静态文件未找到时返回 404
-async fn handle_404() -> impl IntoResponse {
-    (StatusCode::NOT_FOUND, Html("<h1>404 Not Found</h1><p>Resource not found.</p>"))
 }
 
 // ---------------- Metrics ----------------
@@ -233,7 +293,7 @@ fn spawn_metrics_collector(metrics: Arc<Metrics>) {
             };
 
             let mut net_total: u128 = 0;
-            for (_name, data) in net.list(){
+            for (_name, data) in net.list() {
                 net_total += (data.received() as u128) + (data.transmitted() as u128);
             }
             let mut prev = metrics.prev_net_total.lock().await;
