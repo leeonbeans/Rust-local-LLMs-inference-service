@@ -4,12 +4,13 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
+    routing::get_service,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
-use axum::routing::get_service;
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration,process::{Command,Stdio,Child}};
+use std::collections::HashMap;
 use tokio::sync::Mutex;
 use sysinfo::{Networks, System, Disks};
 use tower_http::{
@@ -19,6 +20,7 @@ use tower_http::{
 use sqlx::{Pool, Sqlite, SqlitePool, Row};
 use tracing_subscriber;
 
+
 const SAMPLE_CAPACITY: usize = 60;
 
 #[derive(Clone)]
@@ -26,7 +28,9 @@ struct AppState {
     client: Client,
     llama_base: String,
     metrics: Arc<Metrics>,
-    db: Pool<Sqlite>, // 新增 SQLite 连接池
+    db: Pool<Sqlite>, //  SQLite 连接池
+    current_model: Arc<Mutex<Option<Child>>>,
+    model_paths: Arc<HashMap<String, String>>
 }
 
 struct Metrics {
@@ -36,6 +40,7 @@ struct Metrics {
     network: Mutex<VecDeque<f32>>,
     prev_net_total: Mutex<u128>,
 }
+
 
 impl Metrics {
     fn new() -> Self {
@@ -57,6 +62,10 @@ struct ChatRequest {
     top_p: f32,
     reset: Option<bool>, // 新增，支持清空对话
 }
+#[derive(Deserialize)]
+struct LoadModelRequest {
+    model: String,
+}
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -68,6 +77,10 @@ struct HealthResponse {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    let mut model_paths = HashMap::new();
+    model_paths.insert("qwen3".to_string(), ".\\model\\qwen2.5-0.5b.gguf".to_string());
+    model_paths.insert("llama".to_string(), ".\\llama2\\llama-2-7b.gguf".to_string());
 
     // 初始化 SQLite
     let db = SqlitePool::connect("sqlite://chat.db?mode=rwc").await.unwrap();
@@ -96,6 +109,8 @@ async fn main() {
         llama_base,
         metrics,
         db,
+        current_model: Arc::new(Mutex::new(None)),
+        model_paths: Arc::new(model_paths),
     };
 
     // 静态文件服务
@@ -108,6 +123,7 @@ async fn main() {
         .route("/api/chat", post(chat_handler))
         .route("/api/system_stats", get(system_stats_handler))
         .route("/api/history", get(history_handler)) // 新增历史接口
+        .route("/api/load_model", post(load_model_handler))
         .with_state(state)
         .layer(
             CorsLayer::new()
@@ -319,4 +335,53 @@ async fn push(m: &Mutex<VecDeque<f32>>, val: f32) {
         dq.pop_front();
     }
     dq.push_back((val * 100.0).round() / 100.0);
+}
+async fn load_model_handler(
+    State(state): State<AppState>,
+    Json(req): Json<LoadModelRequest>,
+) -> impl IntoResponse {
+    // 查找映射表
+    let Some(path) = state.model_paths.get(&req.model) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": "error", "error": "未知模型"})),
+        );
+    };
+
+    // 关闭旧进程（如果有）
+    {
+        let mut guard = state.current_model.lock().await;
+        if let Some(child) = guard.as_mut() {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = Command::new("taskkill")
+                    .args(&["/PID", &child.id().to_string(), "/F"])
+                    .output();
+            }
+            let _ = child.kill();
+            *guard = None;
+        }
+    }
+
+    // 启动新 llama-server
+    let exe = ".\\model\\llama\\llama-server.exe";
+    match Command::new(exe)
+        .args(&["-m", path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => {
+            let mut guard = state.current_model.lock().await;
+            *guard = Some(child);
+            (
+                StatusCode::OK,
+                Json(json!({"status": "ok", "model": req.model})),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "error", "error": e.to_string()})),
+        ),
+    }
 }

@@ -60,6 +60,7 @@
           <option value="llama-2">llama-2</option>
         </select>
       </label>
+      <button onclick="loadModel()">加载模型</button>
 
       <label>Temperature (<span id="temperature-value">0.7</span>):
         <input type="range" id="temperature-slider" min="0" max="1" step="0.05" value="0.7">
@@ -238,6 +239,25 @@
     chart.data.labels = data.map((_, i) => i);
     chart.data.datasets[0].data = data;
     chart.update();
+  }
+
+  async function loadModel() {
+    const model = document.getElementById("model-select").value;
+    try {
+      const resp = await fetch("/api/load_model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model })
+      });
+      const data = await resp.json();
+      if (data.status === "ok") {
+        alert("模型加载成功: " + model);
+      } else {
+        alert("加载失败: " + data.error);
+      }
+    } catch (e) {
+      alert("❌ 请求失败，Rust 后端不可用");
+    }
   }
 
   // 循环
