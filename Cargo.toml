@@ -15,3 +15,11 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 sqlx = { version = "0.8.6", features = ["sqlite","runtime-tokio"] }
 tower = "0.5.2"
+anyhow = "1.0.100"
+rand = "0.9.2"
+candle-transformers = { version = "0.9.1"  }
+candle-examples = "0.9.1"
+
+tokenizers = { version = "0.21.0", default-features = false, features = ["onig"] }
+#candle-core = { version = "0.9.1",features = ["cuda"] } GPU cuda assist
+candle-core = { version = "0.9.1" } #Only CPU
