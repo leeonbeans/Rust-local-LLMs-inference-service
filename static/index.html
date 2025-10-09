@@ -168,6 +168,9 @@
     if (!msg) return;
     msgInput.value = "";
 
+    if (chatBox.childElementCount % 2 === 0)  //发送消息时，最新消息为用户方所做的处理
+      chatBox.innerHTML += `<div style="color:blue"><i>------</i></div>`;
+
     const model = document.getElementById("model-select").value;
     const temperature = parseFloat(tempSlider.value);
     const top_p = parseFloat(topPSlider.value);
