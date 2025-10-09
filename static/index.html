@@ -116,18 +116,46 @@
         updateStatus("❌ Rust 服务异常", "disconnected");
         return;
       }
+
       const data = await resp.json();
-      if (data.status === "ok" && data.llama === "ok") {
-        updateStatus("✅ Rust + Llama 正常", "connected");
-      } else if (data.status === "ok" && data.llama !== "ok") {
-        updateStatus("⚠️ Rust 正常，但 Llama 不可用", "warning");
-      } else {
-        updateStatus("❌ 未知错误", "disconnected");
+
+      // --- 状态组合判断 ---
+      const llamaStatus = data.llama || "unknown";
+      const candleStatus = data.candle || "unknown";
+
+      if (data.status !== "ok") {
+        updateStatus("❌ Rust 后端异常", "disconnected");
+        return;
       }
+
+      // 优先判断两种模型都没加载
+      if (llamaStatus === "none" && candleStatus === "none") {
+        updateStatus("⚠️ 后端正常，但未加载任何模型", "warning");
+        return;
+      }
+
+      // 同时检测 llama 与 candle 状态
+      if (llamaStatus === "llama_loaded" && candleStatus === "loaded") {
+        updateStatus("✅ Llama 与 Candle 模型均已加载", "connected");
+      } else if (llamaStatus === "llama_loaded") {
+        updateStatus("✅ Llama 服务正常", "connected");
+      } else if (candleStatus === "candle_loaded") {
+        updateStatus("✅ Candle 模型已加载", "connected");
+      }else if (llamaStatus === "loading_or_error"){
+        updateStatus("✅ Llama 服务正在加载", "loading");
+      }else if (llamaStatus === "unreachable")
+      {
+        updateStatus("❌ llama服务不可达", "error")
+      }else {
+        updateStatus("⚠️ 模型状态未知", "warning");
+      }
+
     } catch (e) {
+      console.error("健康检查失败:", e);
       updateStatus("❌ 无法连接 Rust 服务", "disconnected");
     }
   }
+
 
   function updateStatus(msg, cls) {
     statusEl.textContent = msg;

@@ -42,8 +42,11 @@ struct AppState {
     db: Pool<Sqlite>,
     current_model: Arc<Mutex<Option<Child>>>,
     model_paths: Arc<HashMap<String, String>>,
-    candle_models: Arc<HashMap<String, (String, String)>>, // ✅ Candle 模型路径表
-    loaded_candle: Arc<Mutex<Option<(ModelWeights, Tokenizer)>>>, // ✅ 已加载的 Candle 模型
+    candle_models: Arc<HashMap<String, (String, String)>>,
+    loaded_candle: Arc<Mutex<Option<(ModelWeights, Tokenizer)>>>,
+    current_model_name: Arc<Mutex<Option<String>>>,
+    candle_model_loaded: Arc<Mutex<bool>>,
+    llama_model_loaded: Arc<Mutex<bool>>,
 }
 
 struct Metrics {
@@ -85,6 +88,7 @@ struct HealthResponse {
     status: String,
     llama: String,
     message: String,
+    candle: String,
 }
 
 #[tokio::main]
@@ -137,6 +141,9 @@ async fn main() {
         model_paths: Arc::new(model_paths),
         candle_models: Arc::new(candle_models),
         loaded_candle: Arc::new(Mutex::new(None)),
+        current_model_name: Arc::new(Mutex::new(None)),
+        candle_model_loaded: Arc::new(Mutex::new(false)),
+        llama_model_loaded: Arc::new(Mutex::new(false)),
     };
 
     let static_files = ServeFile::new("./static/index.html");
@@ -162,21 +169,39 @@ async fn main() {
 }
 // ---------------- Handlers ----------------
 
-// 健康检查
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let llama_health = check_llama_health(&state.client, &state.llama_base).await;
-    let (llama, msg) = match llama_health {
-        Ok(true) => ("ok".to_string(), "Backend + Llama connected".to_string()),
-        Ok(false) => ("loading_or_error".to_string(), "Backend ok, llama not ready".to_string()),
-        Err(e) => ("unreachable".to_string(), format!("Backend ok, llama unreachable: {}", e)),
-    };
-    let res = HealthResponse {
-        status: "ok".to_string(),
-        llama,
-        message: msg,
-    };
+    let mut status = "ok".to_string();
+    let mut llama = "none".to_string();
+    let mut candle = "none".to_string();
+    let mut message = "No model loaded".to_string();
+
+    // 检查 Candle 是否加载
+    if *state.candle_model_loaded.lock().await {
+        candle = "candle_loaded".to_string();
+        message = "Candle 模型已加载".to_string();
+    }
+
+    // 检查 llama.cpp 服务
+    if *state.llama_model_loaded.lock().await {
+        match check_llama_health(&state.client, &state.llama_base).await {
+            Ok(true) => {
+                llama = "llama_loaded".to_string();
+                message = "llama.cpp 模型连接正常".to_string();
+            }
+            Ok(false) => {
+                llama = "loading_or_error".to_string();
+                message = "llama.cpp 未准备好".to_string();
+            }
+            Err(e) => {
+                llama = "unreachable".to_string();
+                message = format!("无法连接 llama.cpp: {}", e);
+            }
+        }
+    }
+    let res = HealthResponse { status, llama, candle, message };
     (StatusCode::OK, Json(res))
 }
+
 
 async fn check_llama_health(client: &Client, base: &str) -> Result<bool, String> {
     let url = format!("{}/health", base.trim_end_matches('/'));
@@ -207,8 +232,10 @@ async fn chat_handler(
     // 检测是否是 candle 模型
     if req.model.contains("candle") {
         let mut lock = state.loaded_candle.lock().await;
+        let mut name = state.current_model_name.lock().await;
+        *name = Some(req.model.clone());
         if let Some((model, tokenizer)) = &mut *lock {
-            let response = run_candle_inference(model, tokenizer, &req.message)
+            let response = run_candle_inference(model, tokenizer, &req.message,req.temperature as f64,Some(req.top_p as f64))
             .unwrap_or_else(|e| format!("Candle error: {e}"));
             sqlx::query("INSERT INTO chat_history (role, content) VALUES (?, ?)")
                 .bind("assistant")
@@ -296,6 +323,7 @@ async fn load_model_handler(
             Ok((model, tokenizer)) => {
                 let mut guard = state.loaded_candle.lock().await;
                 *guard = Some((model, tokenizer));
+                *state.candle_model_loaded.lock().await = true;
                 return (StatusCode::OK, Json(json!({"status": "ok", "model": req.model})));
             }
             Err(e) => {
@@ -327,6 +355,7 @@ async fn load_model_handler(
             }
             let _ = child.kill();
             *guard = None;
+            *state.llama_model_loaded.lock().await = false;
         }
     }
 
@@ -341,6 +370,7 @@ async fn load_model_handler(
         Ok(child) => {
             let mut guard = state.current_model.lock().await;
             *guard = Some(child);
+            *state.llama_model_loaded.lock().await = true;
             (StatusCode::OK, Json(json!({"status": "ok", "model": req.model})))
         }
         Err(e) => (
@@ -360,71 +390,7 @@ fn load_candle_model(model_path: &str, tokenizer_path: &str) -> Result<(ModelWei
     Ok((model, tokenizer))
 }
 
-// fn run_candle_inference(model: &mut ModelWeights, tokenizer: &Tokenizer, prompt: &str) -> Result<String> {
-//     let device = Device::Cpu;
-//     let tokens = tokenizer.encode(prompt, true).map_err(|e| anyhow::anyhow!("{e}"))?;
-//     let input = Tensor::new(tokens.get_ids(), &device)?.unsqueeze(0)?;
-//     let logits = model.forward(&input, 0)?;
-//     let logits = logits.squeeze(0)?;
-//     let mut processor = LogitsProcessor::from_sampling(42, Sampling::ArgMax);
-//     let token = processor.sample(&logits)?;
-//     let decoded = tokenizer.decode(&[token], true).map_err(|e| anyhow::anyhow!("{e}"))?;
-//     Ok(decoded)
-// }
-// fn run_candle_inference(
-//     model: &mut ModelWeights,
-//     tokenizer: &Tokenizer,
-//     prompt: &str,
-// ) -> Result<String> {
-//     let device = Device::Cpu;
-//
-//     // 1️⃣ 编码 prompt
-//     let formatted_prompt = format!(
-//         "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-//         prompt
-//     );
-//     let prompt_tokens = tokenizer.encode(formatted_prompt, true)
-//         .map_err(|e| anyhow::anyhow!("{e}"))?;
-//     let mut all_tokens = prompt_tokens.get_ids().to_vec();
-//
-//     // 2️⃣ 设置采样器
-//     let mut processor = LogitsProcessor::from_sampling(42, Sampling::TopP {
-//         p: 0.9,
-//         temperature: 0.7,
-//     });
-//
-//     // 3️⃣ Token 输出流（便于增量解码）
-//     let mut stream = TokenOutputStream::new(tokenizer.clone());
-//
-//     // 4️⃣ 主生成循环
-//     for step in 0..256 { // 限制最多生成 256 tokens
-//         let input = Tensor::new(&[all_tokens.last().copied().unwrap()], &device)?.unsqueeze(0)?;
-//         let logits = model.forward(&input, all_tokens.len() - 1)?;
-//         let logits = logits.squeeze(0)?;
-//
-//         let next_token = processor.sample(&logits)?;
-//         all_tokens.push(next_token);
-//
-//         // 检查是否遇到结束符
-//         if let Some(id) = stream.get_token("<|im_end|>") {
-//             if next_token == id {
-//                 break;
-//             }
-//         }
-//
-//         // 可选：打印或立即解码部分内容
-//         if let Some(txt) = stream.next_token(next_token)? {
-//             print!("{txt}");
-//             std::io::stdout().flush().ok();
-//         }
-//     }
-//
-//     // 5️⃣ 返回完整结果
-//     let output = tokenizer.decode(&all_tokens, true).map_err(|e| anyhow::anyhow!("{e}"))?;
-//     Ok(output)
-// }
-
-fn run_candle_inference(model: &mut ModelWeights, tokenizer: &Tokenizer, prompt: &str) -> anyhow::Result<String> {
+fn run_candle_inference(model: &mut ModelWeights, tokenizer: &Tokenizer, prompt: &str,temperature: f64, top_p: Option<f64>) -> anyhow::Result<String> {
     // 固定 prompt 模板
     let formatted_prompt = format!(
         "<|im_start|>system\n你是一个友好的 AI 助手，回答要简洁自然。\n<|im_end|>\n\
@@ -440,7 +406,7 @@ fn run_candle_inference(model: &mut ModelWeights, tokenizer: &Tokenizer, prompt:
 
     // text generation
     let seed = rand::random_range(200_000_000..400_000_000);
-    let text_generation = TextGeneration::new(0.8, 1.1, 64, seed, None, None, false);
+    let text_generation = TextGeneration::new(temperature, 1.1, 64, seed, top_p, None, false);
 
     // 执行生成
     let result = text_generation.generate(input_tokens, model, tokenizer, &Device::Cpu)?;
