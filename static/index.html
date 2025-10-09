@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>本地 LLM 前端</title>
+  <title>Rust-local-LLMs</title>
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
   <style>
     /* 保持你现有的样式，不变 */
@@ -18,7 +18,7 @@
     #parameters label { margin: 10px 0; font-weight: 500; font-size: 14px; }
     select, input[type="range"] { width: 100%; margin-top: 5px; }
     select { padding: 8px; border: 1px solid #ced4da; border-radius: 4px; background-color: #fff; }
-    .monitor-header { font-size: 16px; font-weight: 500; color: #6c757d; margin-bottom: 10px; padding: 0 20px; }
+    .monitor-header { font-size: 32px; font-weight: 500; color: #6c757d; margin-bottom: 10px; padding: 0 20px; text-align: center;}
     #system-monitor { padding: 10px 0; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); }
     .monitor-item { padding: 0 10px 10px 10px; }
     canvas { width: 100% !important; height: 80px !important; max-width: none; background: #ffffff; border: none; padding: 0; box-shadow: none; }
@@ -47,7 +47,7 @@
   </style>
 </head>
 <body>
-<h1>本地 LLM 前端</h1>
+<h1>Rust-local-LLMs</h1>
 <div id="status">连接状态: <span id="connection-status">检测中...</span></div>
 
 <div id="chat-container">
@@ -72,11 +72,11 @@
     </div>
 
     <div id="system-monitor">
-      <div class="monitor-header">系统监控 (实时)</div>
+      <div class="monitor-header">系统监控</div>
       <div class="monitor-item"><canvas id="cpu-chart" width="300" height="80"></canvas></div>
       <div class="monitor-item"><canvas id="mem-chart" width="300" height="80"></canvas></div>
       <div class="monitor-item"><canvas id="disk-chart" width="300" height="80"></canvas></div>
-      <div class="monitor-item"><canvas id="net-chart" width="300" height="80"></canvas></div>
+<!--      <div class="monitor-item"><canvas id="net-chart" width="300" height="80"></canvas></div>-->
     </div>
   </div>
 
@@ -88,7 +88,6 @@
       <button onclick="resetConversation()">🆕 新建对话</button>
     </div>
   </div>
-
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -245,7 +244,7 @@
   const cpuChart = new Chart(document.getElementById("cpu-chart"), { type: "line", data: { labels: [], datasets: [{ label: "CPU %", data: [], borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] }, options: baseChartOptions });
   const memChart = new Chart(document.getElementById("mem-chart"), { type: "line", data: { labels: [], datasets: [{ label: "内存 %", data: [], borderColor: '#28a745', backgroundColor: 'rgba(40, 167, 69, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] }, options: baseChartOptions });
   const diskChart = new Chart(document.getElementById("disk-chart"), { type: "line", data: { labels: [], datasets: [{ label: "磁盘 %", data: [], borderColor: '#ffc107', backgroundColor: 'rgba(255, 193, 7, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] }, options: baseChartOptions });
-  const netChart = new Chart(document.getElementById("net-chart"), { type: "line", data: { labels: [], datasets: [{ label: "网络 %", data: [], borderColor: '#dc3545', backgroundColor: 'rgba(220, 53, 69, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] }, options: baseChartOptions });
+  //const netChart = new Chart(document.getElementById("net-chart"), { type: "line", data: { labels: [], datasets: [{ label: "网络 %", data: [], borderColor: '#dc3545', backgroundColor: 'rgba(220, 53, 69, 0.1)', tension: 0.3, fill: true, pointRadius: 0 }] }, options: baseChartOptions });
 
   async function updateSystemStats() {
     try {
@@ -256,7 +255,7 @@
       updateChart(cpuChart, data.cpu, MAX_POINTS);
       updateChart(memChart, data.memory, MAX_POINTS);
       updateChart(diskChart, data.disk, MAX_POINTS);
-      updateChart(netChart, data.network, MAX_POINTS);
+      //updateChart(netChart, data.network, MAX_POINTS);
     } catch (e) {
       console.error("系统监控失败", e);
     }
